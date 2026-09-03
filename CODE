@@ -31,8 +31,14 @@ local LocalPlayer      = Players.LocalPlayer
 local Events           = RS:WaitForChild("Events")
 
 -- imagem de fundo do painel (fica salva no arquivo abaixo)
-local BG = { imagem = "", transparencia = 0.5 }
+local BG = {
+    imagem       = "",   -- o que voce digitou (ID / link / arquivo)
+    arquivo      = "",   -- o arquivo ja baixado, pra nao baixar de novo
+    salt         = 0,    -- muda o nome do arquivo e fura o cache do Roblox
+    transparencia = 0.5,
+}
 local BG_ARQUIVO = "painel_pesca_fundo.json"
+local BG_PASTA   = "painel_pesca_fundos"
 
 --==================================================================
 -- ONDE PENDURAR AS GUIS
@@ -229,17 +235,29 @@ function Zero.new(config)
 
 	-- A imagem fica no ZIndex 0 e todo o resto da janela sobe pro 2.
 	-- Sem isso o conteudo some atras da foto.
+	--
+	-- O recorte abaixo existe por causa dos cantos: UICorner na janela
+	-- NAO arredonda os filhos. Sem ele o ImageLabel pinta o retangulo
+	-- inteiro e come as bordas redondas, deixando o painel quadrado.
+	-- Entao a foto vai dentro de um Frame que recorta no mesmo raio.
+	self.BgClip = new("Frame", {
+		Name = "FundoClip", Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1, BorderSizePixel = 0,
+		ClipsDescendants = true, ZIndex = 0, Parent = self.Main,
+	})
+	corner(14, self.BgClip)
 	self.BgImage = new("ImageLabel", {
 		Name = "Fundo", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
 		BorderSizePixel = 0, Image = "", ImageTransparency = BG.transparencia,
-		ScaleType = Enum.ScaleType.Crop, Visible = false, ZIndex = 0, Parent = self.Main,
+		ScaleType = Enum.ScaleType.Crop, Visible = false, ZIndex = 0, Parent = self.BgClip,
 	})
+	corner(14, self.BgImage)
 
 	local bar = new("Frame", {
 		Name = "TitleBar", Size = UDim2.new(1, 0, 0, 48),
 		BackgroundTransparency = 1, ZIndex = 2, Parent = self.Main,
 	})
-	new("TextLabel", {
+	self.TitleLabel = new("TextLabel", {
 		Position = UDim2.fromOffset(20, 0), Size = UDim2.new(0, 240, 1, 0),
 		BackgroundTransparency = 1, Font = Enum.Font.GothamBold, Text = self.Title,
 		TextSize = 15, TextColor3 = Theme.Text,
@@ -316,6 +334,41 @@ function Zero.new(config)
 	})
 	list(self.Toasts, 8)
 
+	------------------------------------------------------------------
+	-- MINI  (igual ao painel ALL)
+	-- Minimizado vira uma pastilha com a sua foto de fundo e o nome.
+	-- Arrasta pra mover, clica pra voltar. Antes so encolhia a altura
+	-- e continuava uma barra larga atravessada na tela.
+	------------------------------------------------------------------
+	self.MiniSize = config.MiniSize or Vector2.new(168, 50)
+	self.Mini = new("Frame", {
+		Name = "Mini", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+		Visible = false, ZIndex = 20, Parent = self.Main,
+	})
+	self.MiniImage = new("ImageLabel", {
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.new(1, -2, 1, -2), BackgroundColor3 = Theme.Card,
+		BorderSizePixel = 0, Image = "", ScaleType = Enum.ScaleType.Crop,
+		ClipsDescendants = true, ZIndex = 20, Parent = self.Mini,
+	})
+	corner(14, self.MiniImage)
+	self.MiniLabel = new("TextLabel", {
+		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+		Font = Enum.Font.GothamBold, Text = "0x5A46", TextSize = 15,
+		TextColor3 = Color3.new(1, 1, 1), TextStrokeTransparency = 0.45,
+		ZIndex = 21, Parent = self.Mini,
+	})
+	local miniBtn = new("TextButton", {
+		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+		AutoButtonColor = false, Text = "", ZIndex = 22, Parent = self.Mini,
+	})
+	function self:SyncMini()
+		if not self.MiniImage then return end
+		self.MiniImage.Image = self.BgImage and self.BgImage.Image or ""
+		self.MiniImage.ImageTransparency = 0
+		self.MiniImage.BackgroundColor3 = Theme.Card
+	end
+
 	self:_enableDrag(bar)
 	minimize.MouseEnter:Connect(function()
 		tween(minimize, { BackgroundTransparency = 0, TextColor3 = Theme.Text })
@@ -325,13 +378,44 @@ function Zero.new(config)
 	end)
 	function self:ToggleMinimize()
 		self.Minimized = not self.Minimized
-		minimize.Text = self.Minimized and "+" or "—"
-		self.Body.Visible = not self.Minimized
+		self.Body.Visible       = not self.Minimized
+		self.TitleLabel.Visible = not self.Minimized
+		searchBox.Visible       = not self.Minimized
+		minimize.Visible        = not self.Minimized
+		self.BgClip.Visible     = not self.Minimized
+		if self.Minimized then self:SyncMini() end
+		self.Mini.Visible = self.Minimized
 		tween(self.Main, {
-			Size = self.Minimized and UDim2.fromOffset(size.X, 48) or UDim2.fromOffset(size.X, size.Y),
+			Size = self.Minimized and UDim2.fromOffset(self.MiniSize.X, self.MiniSize.Y)
+			                      or  UDim2.fromOffset(size.X, size.Y),
 		}, SMOOTH)
 	end
 	minimize.MouseButton1Click:Connect(function() self:ToggleMinimize() end)
+
+	-- arrastar a pastilha, e clicar (sem arrastar) pra voltar
+	self:_enableDrag(miniBtn)
+	do
+		local pressPos, moveu = nil, false
+		miniBtn.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1
+				or input.UserInputType == Enum.UserInputType.Touch then
+				pressPos, moveu = input.Position, false
+			end
+		end)
+		miniBtn.InputChanged:Connect(function(input)
+			if pressPos and (input.UserInputType == Enum.UserInputType.MouseMovement
+				or input.UserInputType == Enum.UserInputType.Touch) then
+				if (input.Position - pressPos).Magnitude > 6 then moveu = true end
+			end
+		end)
+		miniBtn.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1
+				or input.UserInputType == Enum.UserInputType.Touch then
+				if pressPos and not moveu and self.Minimized then self:ToggleMinimize() end
+				pressPos = nil
+			end
+		end)
+	end
 	self.Search:GetPropertyChangedSignal("Text"):Connect(function()
 		self:_filter(self.Search.Text)
 	end)
@@ -1620,6 +1704,37 @@ local win = Zero.new({ Title = "0x5A46  ·  Pesca de Peso Pesado" })
 -- ou o nome de um arquivo que ja esta na pasta do executor.
 --==================================================================
 local statusImg   -- preenchido la embaixo, na aba Painel
+local caixaFundo  -- a caixinha de texto da aba Painel
+
+------------------------------------------------------------------
+-- POR QUE A FOTO SO TROCAVA DEPOIS DE SAIR E ENTRAR
+--
+-- O Roblox guarda o arquivo do getcustomasset pelo NOME. Como toda
+-- foto era gravada por cima do mesmo "painel_pesca_fundo.png", o nome
+-- nao mudava e o jogo entregava a imagem VELHA que ja estava na
+-- memoria. So relogando o cache limpava.
+--
+-- Agora cada imagem vira um arquivo com nome proprio, tirado do
+-- proprio link. Nome novo = o Roblox e obrigado a ler do disco, e a
+-- troca acontece na hora.
+------------------------------------------------------------------
+local function hashStr(s)
+    local h = 5381
+    for i = 1, #s do
+        h = (h * 33 + string.byte(s, i)) % 4294967296
+    end
+    return string.format("%x", h)
+end
+local function nomeArquivoFundo(url, ext)
+    local id = hashStr(url) .. "_" .. tostring(BG.salt or 0)
+    if makefolder and isfolder then
+        pcall(function()
+            if not isfolder(BG_PASTA) then makefolder(BG_PASTA) end
+        end)
+        return BG_PASTA .. "/fundo_" .. id .. "." .. ext
+    end
+    return "painel_pesca_fundo_" .. id .. "." .. ext
+end
 
 local function salvarFundo()
     if not writefile then return end
@@ -1666,14 +1781,20 @@ local function acharImagemNoHtml(html)
     return string.match(html, 'https://[%w%p]-%.jpg') or string.match(html, 'https://[%w%p]-%.png')
 end
 
-local function definirFundo(entrada)
+local function definirFundo(entrada, silencioso)
     entrada = string.gsub(string.gsub(tostring(entrada or ""), "^%s+", ""), "%s+$", "")
     BG.imagem = entrada
     local function diz(t) if statusImg then statusImg.set(t) end end
+    -- deixa a caixinha mostrando o que esta valendo agora
+    if caixaFundo and caixaFundo.Text ~= entrada and not caixaFundo:IsFocused() then
+        caixaFundo.Text = entrada
+    end
 
     if entrada == "" then
         win.BgImage.Image = ""
         win.BgImage.Visible = false
+        BG.arquivo = ""
+        if win.SyncMini then pcall(function() win:SyncMini() end) end
         diz("Sem imagem.")
         salvarFundo()
         return
@@ -1681,9 +1802,11 @@ local function definirFundo(entrada)
 
     ---------------------------------------------------------- ID do Roblox
     if tonumber(entrada) then
+        BG.arquivo = ""
         win.BgImage.Image = "rbxassetid://" .. entrada
         win.BgImage.ImageTransparency = BG.transparencia
         win.BgImage.Visible = true
+        if win.SyncMini then pcall(function() win:SyncMini() end) end
         diz("Carregando ID " .. entrada .. "...")
         -- Alguns IDs sao de decal e nao carregam direto; nesse caso o
         -- rbxthumb resolve. So da pra saber depois de tentar.
@@ -1696,12 +1819,15 @@ local function definirFundo(entrada)
             end
         end)
         salvarFundo()
-        win:Notify({ Title = "Fundo", Text = "imagem aplicada", Duration = 3 })
+        if not silencioso then
+            win:Notify({ Title = "Fundo", Text = "imagem trocada", Duration = 3 })
+        end
         return
     end
 
     local conteudo
     if string.sub(entrada, 1, 13) == "rbxassetid://" then
+        BG.arquivo = ""
         conteudo = entrada
 
     ---------------------------------------------------------- link
@@ -1722,31 +1848,43 @@ local function definirFundo(entrada)
                 return
             end
         end
-        diz("Baixando...")
-        local dados = httpFetch(url)
-        if not dados then diz("Falha ao baixar. Tente um ID do Roblox.") return end
         local ext = string.find(string.lower(url), "%.jpe?g") and "jpg" or "png"
-        local arq = "painel_pesca_fundo." .. ext
-        local ok = pcall(function()
-            writefile(arq, dados)
-            conteudo = getcustomasset(arq)
-        end)
-        if not ok or not conteudo then diz("Falha ao salvar a imagem.") return end
+        local arq = nomeArquivoFundo(url, ext)
+
+        -- ja baixou essa imagem numa vez passada? entao nem baixa de novo
+        local jaTem = false
+        pcall(function() jaTem = isfile and isfile(arq) end)
+
+        if not jaTem then
+            diz("Baixando...")
+            local dados = httpFetch(url)
+            if not dados then diz("Falha ao baixar. Tente um ID do Roblox.") return end
+            local ok = pcall(function() writefile(arq, dados) end)
+            if not ok then diz("Falha ao salvar a imagem.") return end
+        end
+
+        local ok2 = pcall(function() conteudo = getcustomasset(arq) end)
+        if not ok2 or not conteudo then diz("Falha ao ler a imagem salva.") return end
+        BG.arquivo = arq
 
     ---------------------------------------------------------- arquivo local
     else
         if not getcustomasset then diz("Seu executor nao tem getcustomasset.") return end
         local ok = pcall(function() conteudo = getcustomasset(entrada) end)
         if not ok or not conteudo then diz("Arquivo nao achado na pasta do executor.") return end
+        BG.arquivo = entrada
     end
 
     if conteudo then
         win.BgImage.Image = conteudo
         win.BgImage.ImageTransparency = BG.transparencia
         win.BgImage.Visible = true
-        diz("Imagem aplicada!")
+        if win.SyncMini then pcall(function() win:SyncMini() end) end
+        diz("Imagem aplicada. Pra trocar, cole outra e clique Aplicar.")
         salvarFundo()
-        win:Notify({ Title = "Fundo", Text = "imagem aplicada", Duration = 3 })
+        if not silencioso then
+            win:Notify({ Title = "Fundo", Text = "imagem trocada", Duration = 3 })
+        end
     else
         diz("Nao foi possivel aplicar.")
     end
@@ -1761,10 +1899,34 @@ local function carregarFundo()
     if not pcall(function() dados = HttpService:JSONDecode(bruto) end) then return end
     if type(dados) ~= "table" then return end
     if type(dados.transparencia) == "number" then BG.transparencia = dados.transparencia end
+    if type(dados.salt) == "number" then BG.salt = dados.salt end
+    if type(dados.arquivo) == "string" then BG.arquivo = dados.arquivo end
+
     if type(dados.imagem) == "string" and dados.imagem ~= "" then
+        BG.imagem = dados.imagem
         task.spawn(function()
             task.wait(0.5)   -- deixa a aba Painel montar antes, senao o status nao existe
-            pcall(definirFundo, dados.imagem)
+            if caixaFundo then caixaFundo.Text = BG.imagem end
+
+            -- o arquivo ja esta no disco de uma sessao passada?
+            -- entao entra direto, sem baixar o mesmo link toda vez
+            local pronto = false
+            if BG.arquivo ~= "" and isfile and getcustomasset then
+                pcall(function()
+                    if isfile(BG.arquivo) then
+                        local conteudo = getcustomasset(BG.arquivo)
+                        if conteudo then
+                            win.BgImage.Image = conteudo
+                            win.BgImage.ImageTransparency = BG.transparencia
+                            win.BgImage.Visible = true
+                            if win.SyncMini then pcall(function() win:SyncMini() end) end
+                            if statusImg then statusImg.set("Imagem de sempre carregada do disco.") end
+                            pronto = true
+                        end
+                    end
+                end)
+            end
+            if not pronto then pcall(definirFundo, BG.imagem, true) end
         end)
     end
 end
@@ -1890,16 +2052,28 @@ do
 
     local d = abaPainel:Section("Atalhos", nil, 2)
     d:Status().Text = "K liga a pesca (da pra rebindar: clique do meio no chip)\n" ..
-        "RightCtrl minimiza\nEND esconde o painel inteiro"
+        "RightCtrl minimiza (vira pastilha: arrasta pra mover, clica pra voltar)\n" ..
+        "END esconde o painel inteiro"
 
     ---------------------------------------------------------- fundo
     local img = abaPainel:Section("Imagem de fundo", "ID do Roblox, link ou arquivo", 2)
     local caixa = img:Input({ Name = "Origem", Placeholder = "1234567890  /  link.png  /  foto.png",
         Default = BG.imagem, Callback = function(t) definirFundo(t) end })
+    caixaFundo = caixa
     img:Button({ Name = "Aplicar", Callback = function() definirFundo(caixa.Text) end })
     img:Button({ Name = "Remover", Callback = function()
         caixa.Text = ""
         definirFundo("")
+    end })
+    img:Button({ Name = "Recarregar (se a foto mudou no link)", Callback = function()
+        -- mesmo link, imagem diferente la: muda o nome do arquivo pra
+        -- obrigar o Roblox a buscar de novo em vez de usar o cache
+        if BG.imagem == "" then
+            win:Notify({ Title = "Fundo", Text = "nao tem imagem pra recarregar", Duration = 3 })
+            return
+        end
+        BG.salt = (BG.salt or 0) + 1
+        definirFundo(BG.imagem)
     end })
     img:Slider({ Name = "Transparencia", Min = 0, Max = 100,
         Default = math.floor(BG.transparencia * 100), Suffix = "%",
@@ -1914,7 +2088,9 @@ do
         "· um <b>link direto</b> terminando em .png ou .jpg\n" ..
         "· o <b>nome de um arquivo</b> na pasta do executor\n\n" ..
         "Link de pagina (pinterest e afins) ele tenta abrir e achar a " ..
-        "imagem sozinho. Fica salvo e volta na proxima vez.", 100)
+        "imagem sozinho.\n\n" ..
+        "<b>Troca na hora</b> — cole outra e clique Aplicar, sem sair do " ..
+        "jogo. A ultima fica salva e volta sozinha na proxima vez.", 116)
 
     carregarFundo()
 end
